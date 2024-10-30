@@ -193,7 +193,7 @@ class Tapper:
         
         data = json.dumps({
             'data': tg_web_data,
-            'referralCode': settings.REF_ID
+            'referralCode': self.start_param
         })
         
         retry_count = 0

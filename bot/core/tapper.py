@@ -7,6 +7,7 @@ from urllib.parse import unquote
 from contextlib import suppress
 
 import aiohttp
+import cloudscraper
 from aiohttp_proxy import ProxyConnector
 from better_proxy import Proxy
 from pyrogram import Client
@@ -535,7 +536,7 @@ class Tapper:
             
         url = 'https://api.paws.community/v1/quests/completed'
         headers = self.get_headers(with_auth=True)
-        data = json.dumps({'questId': quest_id})
+        data = {'questId': quest_id}
 
         quest_title = quest_info.get('title', 'Unknown quest')
         quest_type = quest_info.get('type', 'Unknown type')
@@ -545,168 +546,93 @@ class Tapper:
 
         logger.info(
             f"{self.session_name} | "
-            f"Attempting to complete quest: {quest_title} | "
+            f"Processing quest: {quest_title} | "
             f"Type: {quest_type} | "
             f"Action: {quest_action} | "
             f"Reward: {quest_rewards}"
         )
 
-        if quest_type == 'social' and quest_action == 'link' and 't.me/' in quest_data:
-            logger.info(f"{self.session_name} | Detected quest to subscribe to Telegram channel")
-            if not await self.join_telegram_channel(quest_data):
-                logger.error(f"{self.session_name} | Failed to subscribe to channel {quest_data}")
-                return False
-            await asyncio.sleep(5)
+        if quest_type == 'social' and quest_action == 'link':
+            if 't.me/' in quest_data:
+                logger.info(f"{self.session_name} | Detected Telegram channel subscription quest")
+                if not await self.join_telegram_channel(quest_data):
+                    logger.error(f"{self.session_name} | Failed to subscribe to channel {quest_data}")
+                    return False
+                await asyncio.sleep(random.uniform(3, 5))
+
+        session = cloudscraper.create_scraper()
+        session.headers = headers
 
         retry_count = 0
         max_retries = settings.MAX_RETRIES
         
         while retry_count < max_retries:
             try:
-                async with ClientSession() as session:
-                    timeout = random.uniform(settings.REQUEST_TIMEOUT[0], settings.REQUEST_TIMEOUT[1])
-                    async with session.post(
-                        url=url,
-                        headers=headers,
-                        data=data,
-                        ssl=False,
-                        timeout=ClientTimeout(total=timeout)
-                    ) as response:
-                        logger.info(f"{self.session_name} | Quest '{quest_title}' completion status: {response.status}")
-                        
-                        if response.status == 504:
-                            retry_count += 1
-                            if retry_count < max_retries:
-                                delay = random.uniform(settings.RETRY_DELAY[0], settings.RETRY_DELAY[1])
-                                logger.warning(f"{self.session_name} | Gateway Timeout for quest '{quest_title}', retrying in {delay:.1f} sec...")
-                                await asyncio.sleep(delay)
-                                continue
-                            else:
-                                logger.error(f"{self.session_name} | Exceeded number of attempts to complete quest '{quest_title}'")
-                                return False
-                        
-                        response_text = await response.text()
-                        
-                        if response_text.strip().startswith('<!DOCTYPE html>'):
-                            retry_count += 1
-                            if retry_count < max_retries:
-                                delay = random.uniform(settings.RETRY_DELAY[0], settings.RETRY_DELAY[1])
-                                logger.warning(f"{self.session_name} | Received HTML response for quest '{quest_title}', retrying in {delay:.1f} sec...")
-                                await asyncio.sleep(delay)
-                                continue
-                            else:
-                                logger.error(f"{self.session_name} | Exceeded number of attempts to complete quest '{quest_title}'")
-                                return False
-                        
-                        try:
-                            result = json.loads(response_text)
-                            logger.debug(f"{self.session_name} | Server response: {response_text[:200]}...", "response")
-                            
-                            if result.get('success') is True:
-                                logger.success(f"{self.session_name} | Quest '{quest_title}' successfully completed")
-                                return await self.claim_quest(quest_id, quest_title, quest_rewards)
-                            else:
-                                error_message = result.get('message', 'Unknown error')
-                                logger.error(f"{self.session_name} | Failed to complete quest '{quest_title}': {error_message}")
-                                return False
-                                
-                        except json.JSONDecodeError:
-                            logger.error(f"{self.session_name} | Received invalid JSON response: {response_text[:200]}")
-                            return False
-                        
+                response = session.post(url, json=data)
+                logger.info(f"{self.session_name} | Quest completion status: {response.status_code}")
+                
+                if response.status_code == 201:
+                    logger.success(f"{self.session_name} | Quest '{quest_title}' completed successfully")
+                    return await self.claim_quest_reward(quest_id, quest_title, quest_rewards)
+                else:
+                    try:
+                        result = response.json()
+                        error_message = result.get('message', 'Unknown error')
+                        logger.warning(f"{self.session_name} | Failed to complete quest: {error_message}")
+                    except:
+                        logger.error(f"{self.session_name} | Invalid response: {response.text[:200]}")
+                    return False
+
             except Exception as error:
                 retry_count += 1
                 if retry_count < max_retries:
                     delay = random.uniform(settings.RETRY_DELAY[0], settings.RETRY_DELAY[1])
-                    logger.warning(f"{self.session_name} | Error completing quest '{quest_title}': {str(error)}, retrying in {delay:.1f} sec...")
+                    logger.warning(f"{self.session_name} | Error: {str(error)}, retrying in {delay:.1f} sec...")
                     await asyncio.sleep(delay)
                 else:
-                    logger.error(f"{self.session_name} | Error completing quest '{quest_title}': {str(error)}")
+                    logger.error(f"{self.session_name} | Failed to complete quest: {str(error)}")
                     return False
 
-    async def claim_quest(self, quest_id: str, quest_title: str, quest_rewards: int):
-        """Claiming reward for a quest"""
+    async def claim_quest_reward(self, quest_id: str, quest_title: str, quest_rewards: int):
+        """Claiming reward for completed quest"""
         url = 'https://api.paws.community/v1/quests/claim'
         headers = self.get_headers(with_auth=True)
-        data = json.dumps({'questId': quest_id})
+        data = {'questId': quest_id}
+
+        session = cloudscraper.create_scraper()
+        session.headers = headers
 
         retry_count = 0
         max_retries = settings.MAX_RETRIES
 
         while retry_count < max_retries:
             try:
-                logger.info(f"{self.session_name} | Attempting to claim reward for quest '{quest_title}'")
-                async with ClientSession() as session:
-                    timeout = random.uniform(settings.REQUEST_TIMEOUT[0], settings.REQUEST_TIMEOUT[1])
-                    async with session.post(
-                        url=url,
-                        headers=headers,
-                        data=data,
-                        ssl=False,
-                        timeout=ClientTimeout(total=timeout)
-                    ) as response:
-                        logger.info(f"{self.session_name} | Reward claim status: {response.status}")
-
-                        if response.status == 504:
-                            retry_count += 1
-                            if retry_count < max_retries:
-                                delay = random.uniform(settings.RETRY_DELAY[0], settings.RETRY_DELAY[1])
-                                logger.warning(f"{self.session_name} | Gateway Timeout while claiming reward for quest '{quest_title}', retrying in {delay:.1f} sec...")
-                                await asyncio.sleep(delay)
-                                continue
-                            else:
-                                logger.error(f"{self.session_name} | Exceeded number of attempts to claim reward for quest '{quest_title}'")
-                                return False
-
-                        response_text = await response.text()
-
-                        if response_text.strip().startswith('<!DOCTYPE html>'):
-                            retry_count += 1
-                            if retry_count < max_retries:
-                                delay = random.uniform(settings.RETRY_DELAY[0], settings.RETRY_DELAY[1])
-                                logger.warning(f"{self.session_name} | Received HTML response while claiming reward for quest '{quest_title}', retrying in {delay:.1f} sec...")
-                                await asyncio.sleep(delay)
-                                continue
-                            else:
-                                logger.error(f"{self.session_name} | Exceeded number of attempts to claim reward for quest '{quest_title}'")
-                                return False
-
-                        try:
-                            response.raise_for_status()
-                            result = json.loads(response_text)
-                            
-                            if result.get('success') is True:
-                                logger.success(
-                                    f"{self.session_name} | "
-                                    f"Received reward {quest_rewards} for quest '{quest_title}'"
-                                )
-                                return True
-                            else:
-                                error_message = result.get('message', 'Unknown error')
-                                logger.error(f"{self.session_name} | Failed to claim reward for quest '{quest_title}': {error_message}")
-                                return False
-
-                        except json.JSONDecodeError:
-                            logger.error(f"{self.session_name} | Received invalid JSON response while claiming reward: {response_text[:200]}")
-                            return False
-
-            except ClientResponseError as error:
-                retry_count += 1
-                if retry_count < max_retries:
-                    delay = random.uniform(settings.RETRY_DELAY[0], settings.RETRY_DELAY[1])
-                    logger.warning(f"{self.session_name} | HTTP Error {error.status} while claiming reward, retrying in {delay:.1f} sec...")
-                    await asyncio.sleep(delay)
+                response = session.post(url, json=data)
+                logger.info(f"{self.session_name} | Claiming reward for '{quest_title}'...")
+                
+                if response.status_code == 201:
+                    logger.success(
+                        f"{self.session_name} | "
+                        f"Successfully claimed {quest_rewards} PAWS for quest '{quest_title}'"
+                    )
+                    return True
                 else:
-                    logger.error(f"{self.session_name} | Error claiming reward for quest '{quest_title}': {error}")
+                    try:
+                        result = response.json()
+                        error_message = result.get('message', 'Unknown error')
+                        logger.warning(f"{self.session_name} | Failed to claim reward: {error_message}")
+                    except:
+                        logger.error(f"{self.session_name} | Invalid response: {response.text[:200]}")
                     return False
+
             except Exception as error:
                 retry_count += 1
                 if retry_count < max_retries:
                     delay = random.uniform(settings.RETRY_DELAY[0], settings.RETRY_DELAY[1])
-                    logger.warning(f"{self.session_name} | Error claiming reward: {str(error)}, retrying in {delay:.1f} sec...")
+                    logger.warning(f"{self.session_name} | Error: {str(error)}, retrying in {delay:.1f} sec...")
                     await asyncio.sleep(delay)
                 else:
-                    logger.error(f"{self.session_name} | Error claiming reward for quest '{quest_title}': {str(error)}")
+                    logger.error(f"{self.session_name} | Failed to claim reward: {str(error)}")
                     return False
 
     async def get_user_info(self):
@@ -831,50 +757,12 @@ class Tapper:
 
 async def run_tappers(tg_clients: list[Client], proxies: list[str | None]):
     while True:
-        tapper = Tapper(tg_clients[0])
-        server_check_attempts = 0
-        
-        while server_check_attempts < settings.MAX_SERVER_CHECK_ATTEMPTS:
-            if await tapper.check_server_availability():
-                logger.success("🟢 Server is available, starting session processing")
-                break
-            
-            server_check_attempts += 1
-            if server_check_attempts >= settings.MAX_SERVER_CHECK_ATTEMPTS:
-                delay = random.uniform(
-                    settings.SLEEP_ON_SERVER_ERROR[0],
-                    settings.SLEEP_ON_SERVER_ERROR[1]
-                )
-                logger.error(f"🔌 Server unavailable after several attempts, waiting {delay:.1f} sec...")
-                await asyncio.sleep(delay)
-                continue
-            
-            delay = random.uniform(
-                settings.SERVER_CHECK_RETRY_DELAY[0],
-                settings.SERVER_CHECK_RETRY_DELAY[1]
-            )
-            logger.warning(f"🔌 Server unavailable, attempt {server_check_attempts}/{settings.MAX_SERVER_CHECK_ATTEMPTS}, waiting {delay:.1f} sec...")
-            await asyncio.sleep(delay)
-        
-        if server_check_attempts >= settings.MAX_SERVER_CHECK_ATTEMPTS:
-            continue
-        
         try:
             for client, proxy in zip(tg_clients, proxies):
                 tapper = Tapper(client)
                 try:
                     logger.info(f"{'='*50}")
                     logger.info(f"Processing session: {tapper.session_name}")
-                    
-                    if not await tapper.check_server_availability():
-                        delay = random.uniform(
-                            settings.SLEEP_ON_SERVER_ERROR[0],
-                            settings.SLEEP_ON_SERVER_ERROR[1]
-                        )
-                        logger.error(f"🔌 Server became unavailable during session processing")
-                        logger.info(f"⏳ Skipping remaining sessions and waiting {delay:.1f} seconds...")
-                        await asyncio.sleep(delay)
-                        break
 
                     tg_web_data = await tapper.get_tg_web_data(proxy)
                     if not tg_web_data or not await tapper.authorize(tg_web_data):
@@ -895,10 +783,7 @@ async def run_tappers(tg_clients: list[Client], proxies: list[str | None]):
                                 if await tapper.complete_quest(quest['_id'], quest):
                                     completed_quests += 1
                                     total_rewards += quest_reward
-                                    delay = random.uniform(
-                                        settings.MIN_DELAY_BETWEEN_QUESTS,
-                                        settings.MAX_DELAY_BETWEEN_QUESTS
-                                    )
+                                    delay = random.uniform(5, 10)
                                     logger.info(f"{tapper.session_name} | Waiting {delay:.1f} sec...")
                                     await asyncio.sleep(delay)
 
@@ -917,21 +802,17 @@ async def run_tappers(tg_clients: list[Client], proxies: list[str | None]):
                 finally:
                     logger.info(f"Session processing completed: {tapper.session_name}")
                     logger.info(f"{'='*50}\n")
-            
-            delay = random.uniform(
-                settings.SLEEP_AFTER_SESSIONS[0],
-                settings.SLEEP_AFTER_SESSIONS[1]
-            )
-            logger.info(f"🔄 All sessions processed, waiting {delay:.1f} sec...")
-            await asyncio.sleep(delay)
-        
+
+            sleep_time = random.randint(settings.SLEEP_TIME[0], settings.SLEEP_TIME[1])
+            hours = sleep_time // 3600
+            minutes = (sleep_time % 3600) // 60
+            logger.info(f"Sleep for {hours}h {minutes}m before next cycle")
+            await asyncio.sleep(sleep_time)
+
         except Exception as e:
-            delay = random.uniform(
-                settings.SLEEP_ON_SERVER_ERROR[0],
-                settings.SLEEP_ON_SERVER_ERROR[1]
-            )
+            delay = random.randint(300, 600)
             logger.error(f"Critical error during session processing: {e}")
-            logger.info(f"⏳ Waiting {delay:.1f} sec before retrying...")
+            logger.info(f"⏳ Waiting {delay} sec before retrying...")
             await asyncio.sleep(delay)
 
 async def run_tapper(tg_client: Client, proxy: str | None):

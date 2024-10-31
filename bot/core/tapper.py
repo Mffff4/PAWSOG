@@ -918,14 +918,13 @@ async def run_tappers(tg_clients: list[Client], proxies: list[str | None]):
                     logger.info(f"Session processing completed: {tapper.session_name}")
                     logger.info(f"{'='*50}\n")
             
-            if await tapper.check_server_availability():
-                delay = random.uniform(
-                    settings.SLEEP_AFTER_SESSIONS[0],
-                    settings.SLEEP_AFTER_SESSIONS[1]
-                )
-                logger.info(f"🔄 All sessions processed, waiting {delay:.1f} sec...")
-                await asyncio.sleep(delay)
-            
+            delay = random.uniform(
+                settings.SLEEP_AFTER_SESSIONS[0],
+                settings.SLEEP_AFTER_SESSIONS[1]
+            )
+            logger.info(f"🔄 All sessions processed, waiting {delay:.1f} sec...")
+            await asyncio.sleep(delay)
+        
         except Exception as e:
             delay = random.uniform(
                 settings.SLEEP_ON_SERVER_ERROR[0],
